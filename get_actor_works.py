@@ -8,12 +8,11 @@ from bs4 import BeautifulSoup
 from config import BASE_URL, build_client, LOGGER
 from utils import (
     load_cookie_dict,
-    load_actor_urls,
-    write_actor_works_csv,
     build_actor_url,
     find_next_url,
     fetch_html,
 )
+from storage import Storage
 
 
 def parse_works(html: str):
@@ -92,53 +91,61 @@ def crawl_actor_works(start_url: str, cookie_json: str = "cookie.json"):
 
 
 def run_actor_works(
-    actors_csv: str = "userdata/actors.csv",
+    db_path: str = "userdata/actors.db",
     tags: Optional[Sequence[str] | str] = None,
     sort_type: Optional[str] = None,
     output_dir: str = "userdata/works",
     cookie_json: str = "cookie.json",
 ):
     """
-    批量读取演员列表，抓取作品并写入 CSV。
+    批量读取演员列表，抓取作品并写入指定的 SQLite 数据库文件。
     """
-    actors = load_actor_urls(actors_csv)
-    if not actors:
-        LOGGER.warning("在 %s 中未找到演员数据。", actors_csv)
-        return {}
+    with Storage(db_path) as store:
+        actors = store.iter_actor_urls()
+        if not actors:
+            LOGGER.warning("数据库中未找到演员数据，请先执行演员抓取。")
+            return {}
 
-    if isinstance(tags, str):
-        tags_list = [t.strip() for t in tags.split(",") if t.strip()]
-    elif tags:
-        tags_list = [str(t).strip() for t in tags if t and str(t).strip()]
-    else:
-        tags_list = []
+        if isinstance(tags, str):
+            tags_list = [t.strip() for t in tags.split(",") if t.strip()]
+        elif tags:
+            tags_list = [str(t).strip() for t in tags if t and str(t).strip()]
+        else:
+            tags_list = []
 
-    selected_sort = sort_type if sort_type is not None else ("0" if tags_list else None)
-    summary = {}
+        selected_sort = (
+            sort_type if sort_type is not None else ("0" if tags_list else None)
+        )
+        summary = {}
 
-    for actor_name, href in actors:
-        start_url = build_actor_url(BASE_URL, href, tags_list, selected_sort)
-        LOGGER.info("开始处理演员：%s", actor_name)
-        if tags_list:
-            LOGGER.info("使用标签过滤：%s", ",".join(tags_list))
-        if selected_sort is not None:
-            LOGGER.info("使用 sort_type：%s", selected_sort)
+        for actor_name, href in actors:
+            start_url = build_actor_url(BASE_URL, href, tags_list, selected_sort)
+            LOGGER.info("开始处理演员：%s", actor_name)
+            if tags_list:
+                LOGGER.info("使用标签过滤：%s", ",".join(tags_list))
+            if selected_sort is not None:
+                LOGGER.info("使用 sort_type：%s", selected_sort)
 
-        works = crawl_actor_works(start_url=start_url, cookie_json=cookie_json)
-        out_path = write_actor_works_csv(actor_name, works, output_dir=output_dir)
-        LOGGER.info("作品列表已写入 %s（共 %d 条）。", out_path, len(works))
-        summary[actor_name] = {"count": len(works), "file": out_path}
+            works = crawl_actor_works(start_url=start_url, cookie_json=cookie_json)
+            saved = store.save_actor_works(actor_name, href, works)
+            LOGGER.info(
+                "作品列表已写入数据库 %s（新增/更新 %d 条，抓取 %d 条）。",
+                db_path,
+                saved,
+                len(works),
+            )
+            summary[actor_name] = {"count": len(works)}
 
-    return summary
+        return summary
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="抓取演员作品并写入 per-actor CSV")
+    parser = argparse.ArgumentParser(description="抓取演员作品并写入 SQLite 数据库")
     parser.add_argument(
-        "actors_csv",
-        nargs="?",
-        default="userdata/actors.csv",
-        help="演员列表 CSV 路径（默认：userdata/actors.csv）",
+        "--db",
+        dest="db_path",
+        default="userdata/actors.db",
+        help="SQLite 数据库文件路径，默认 userdata/actors.db",
     )
     parser.add_argument(
         "--tags", help="用于筛选的标签代码，逗号分隔，例如 s 或 s,d", default=None
@@ -149,7 +156,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output-dir",
         default="userdata/works",
-        help="作品 CSV 输出目录，默认 userdata/works",
+        help="作品 CSV 输出目录（保留兼容，实际数据保存在数据库文件中），默认 userdata/works",
     )
     parser.add_argument(
         "--cookie", default="cookie.json", help="Cookie JSON 路径，默认 cookie.json"
@@ -157,7 +164,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     run_actor_works(
-        actors_csv=args.actors_csv,
+        db_path=args.db_path,
         tags=args.tags,
         sort_type=args.sort_type,
         output_dir=args.output_dir,

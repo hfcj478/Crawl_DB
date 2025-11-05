@@ -1,10 +1,27 @@
 import argparse
+from pathlib import Path
 
 from config import LOGGER
 from get_collect_actors import run_collect_actors
 from get_actor_works import run_actor_works
 from get_works_magnet import run_magnet_jobs
 import mdcx_magnets
+from storage import Storage
+
+
+def prepare_environment(db_path: str, works_dir: str, magnets_dir: str) -> None:
+    """
+    初始化运行所需的目录与数据库结构。
+    """
+    db_file = Path(db_path)
+    if db_file.parent:
+        db_file.parent.mkdir(parents=True, exist_ok=True)
+    # 打开后立即关闭，确保 schema.sql 被执行并创建数据库文件
+    with Storage(db_file) as _:
+        pass
+
+    Path(works_dir).mkdir(parents=True, exist_ok=True)
+    Path(magnets_dir).mkdir(parents=True, exist_ok=True)
 
 
 def main():
@@ -13,19 +30,19 @@ def main():
         "--cookie", default="cookie.json", help="Cookie JSON 路径，默认 cookie.json"
     )
     parser.add_argument(
-        "--actors-csv",
-        default="userdata/actors.csv",
-        help="演员列表 CSV 输出路径，默认 userdata/actors.csv",
+        "--db-path",
+        default="userdata/actors.db",
+        help="SQLite 数据库文件路径，默认 userdata/actors.db。",
     )
     parser.add_argument(
         "--works-dir",
         default="userdata/works",
-        help="作品 CSV 输出目录，默认 userdata/works",
+        help="（已废弃）仅为兼容旧配置保留，将被忽略。",
     )
     parser.add_argument(
         "--magnets-dir",
         default="userdata/magnets",
-        help="磁链 CSV 输出目录，默认 userdata/magnets",
+        help="磁链 TXT 输出目录，默认 userdata/magnets",
     )
     parser.add_argument(
         "--tags", help="作品抓取标签过滤，逗号分隔，例如 s 或 s,d", default=None
@@ -40,14 +57,16 @@ def main():
     parser.add_argument("--skip-magnets", action="store_true", help="跳过磁链抓取步骤")
     args = parser.parse_args()
 
+    prepare_environment(args.db_path, args.works_dir, args.magnets_dir)
+
     if not args.skip_collect:
-        run_collect_actors(cookie_json=args.cookie, out_csv=args.actors_csv)
+        run_collect_actors(cookie_json=args.cookie, db_path=args.db_path)
     else:
         LOGGER.info("跳过收藏演员抓取。")
 
     if not args.skip_works:
         run_actor_works(
-            actors_csv=args.actors_csv,
+            db_path=args.db_path,
             tags=args.tags,
             sort_type=args.sort_type,
             output_dir=args.works_dir,
@@ -61,13 +80,17 @@ def main():
             works_path=args.works_dir,
             out_root=args.magnets_dir,
             cookie_json=args.cookie,
+            db_path=args.db_path,
         )
     else:
         LOGGER.info("跳过磁链抓取。")
 
     try:
-        mdcx_magnets.run(args.magnets_dir)
-    except Exception as exc:  # noqa: BLE001
+        mdcx_magnets.run(
+            db_path=args.db_path,
+            output_root=args.magnets_dir,
+        )
+    except Exception as exc:  
         LOGGER.error("磁链筛选失败: %s", exc)
 
 

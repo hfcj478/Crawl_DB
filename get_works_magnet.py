@@ -8,11 +8,9 @@ from bs4 import BeautifulSoup
 from config import BASE_URL, build_client, LOGGER
 from utils import (
     load_cookie_dict,
-    write_magnets_csv,
-    read_all_works,
-    read_works_csv,
     fetch_html,
 )
+from storage import Storage
 
 
 def parse_magnets(html: str) -> List[Dict[str, Any]]:
@@ -95,9 +93,10 @@ def run_magnet_jobs(
     works_path: str = "userdata/works",
     out_root: str = "userdata/magnets",
     cookie_json: str = "cookie.json",
+    db_path: str = "userdata/actors.db",
 ):
     """
-    遍历作品 CSV 目录或单个文件，抓取磁链并写入按演员分类的 CSV。
+    遍历数据库中的作品，抓取磁链并存入 SQLite 数据库文件。
     """
     cookies = load_cookie_dict(cookie_json)
     if not cookies:
@@ -107,70 +106,83 @@ def run_magnet_jobs(
         if must not in cookies:
             LOGGER.warning("Cookie 缺少 %s，可能会遇到拦截。", must)
 
-    source = Path(works_path)
-    if source.is_dir():
-        all_works = read_all_works(str(source), base_url=BASE_URL)
-    elif source.is_file():
-        rows = read_works_csv(str(source), base_url=BASE_URL)
-        all_works = {source.stem: rows} if rows else {}
-    else:
-        LOGGER.error("找不到作品路径：%s", works_path)
-        return {}
+    if works_path != "userdata/works":
+        LOGGER.debug("works_path 参数已废弃，将被忽略：%s", works_path)
+    if out_root != "userdata/magnets":
+        LOGGER.debug("out_root 参数仅用于 TXT 导出，与数据库写入无关：%s", out_root)
 
-    if not all_works:
-        LOGGER.warning("未找到任何作品数据，停止抓取。")
-        return {}
+    with Storage(db_path) as store:
+        all_works = store.get_all_actor_works()
+        if not all_works:
+            LOGGER.warning("数据库中未找到作品数据，请先执行作品抓取。")
+            return {}
 
-    summary = {}
-    with build_client(cookies) as client:
-        for actor_key, works in all_works.items():
-            actor_name = actor_key.replace("_workname", "")
-            LOGGER.info("开始抓取演员：%s", actor_name)
-            files = []
-            magnet_counts = []
-            for i, w in enumerate(works, 1):
-                code, href = w["code"], w["href"]
-                LOGGER.info("[%d/%d] %s -> %s", i, len(works), code, href)
-                try:
-                    magnets = crawl_magnets_for_row(client, code, href)
-                    if not magnets:
-                        LOGGER.warning("%s 未解析到磁力。", code)
-                    out_path = write_magnets_csv(
-                        actor_name, code, magnets, out_root=out_root
-                    )
-                    LOGGER.info("磁链已写入 %s（共 %d 条）。", out_path, len(magnets))
-                    files.append(out_path)
-                    magnet_counts.append(len(magnets))
-                    time.sleep(random.uniform(0.8, 1.6))
-                except Exception as e:
-                    LOGGER.exception("%s 抓取失败：%s", code, e)
-            summary[actor_name] = {
-                "files": files,
-                "works": len(works),
-                "magnets": sum(magnet_counts),
-            }
+        summary = {}
+        with build_client(cookies) as client:
+            for actor_name, works in all_works.items():
+                actor_href = store.get_actor_href(actor_name) or ""
+                LOGGER.info("开始抓取演员：%s", actor_name)
+                magnet_counts = []
+                for i, work in enumerate(works, 1):
+                    code, href = work["code"], work["href"]
+                    LOGGER.info("[%d/%d] %s -> %s", i, len(works), code, href)
+                    try:
+                        magnets = crawl_magnets_for_row(client, code, href)
+                        if not magnets:
+                            LOGGER.warning("%s 未解析到磁力。", code)
+                        saved = store.save_magnets(
+                            actor_name,
+                            actor_href,
+                            code,
+                            magnets,
+                            title=work.get("title"),
+                            href=href,
+                        )
+                        LOGGER.info(
+                            "磁链已写入数据库 %s（更新 %d 条，抓取 %d 条）。",
+                            db_path,
+                            saved,
+                            len(magnets),
+                        )
+                        magnet_counts.append(saved)
+                        time.sleep(random.uniform(0.8, 1.6))
+                    except Exception as e:
+                        LOGGER.exception("%s 抓取失败：%s", code, e)
+                summary[actor_name] = {
+                    "works": len(works),
+                    "magnets": sum(magnet_counts),
+                }
     LOGGER.info("抓取磁链完成。")
     return summary
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="根据作品 CSV 抓取磁链并写入 CSV")
+    parser = argparse.ArgumentParser(description="根据数据库中的作品抓取磁链并写入 SQLite 数据库")
     parser.add_argument(
         "works_path",
         nargs="?",
         default="userdata/works",
-        help="作品 CSV 目录或单个文件（默认：userdata/works）",
+        help="（已废弃）保留参数以兼容旧脚本，将被忽略。",
     )
     parser.add_argument(
         "--output-dir",
         default="userdata/magnets",
-        help="磁链 CSV 输出目录，默认 userdata/magnets",
+        help="TXT 导出目录（默认：userdata/magnets）",
     )
     parser.add_argument(
         "--cookie", default="cookie.json", help="Cookie JSON 路径，默认 cookie.json"
     )
+    parser.add_argument(
+        "--db",
+        dest="db_path",
+        default="userdata/actors.db",
+        help="SQLite 数据库文件路径，默认 userdata/actors.db",
+    )
     args = parser.parse_args()
 
     run_magnet_jobs(
-        works_path=args.works_path, out_root=args.output_dir, cookie_json=args.cookie
+        works_path=args.works_path,
+        out_root=args.output_dir,
+        cookie_json=args.cookie,
+        db_path=args.db_path,
     )

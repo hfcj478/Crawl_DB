@@ -4,7 +4,8 @@ import random
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from config import BASE_URL, build_client, LOGGER
-from utils import load_cookie_dict, write_actors_csv, find_next_url, fetch_html
+from utils import load_cookie_dict, find_next_url, fetch_html
+from storage import Storage
 
 START_URL = f"{BASE_URL}/users/collection_actors"
 
@@ -72,31 +73,33 @@ def crawl_all_pages(cookie_json="cookie.json"):
 
 
 def run_collect_actors(
-    cookie_json: str = "cookie.json", out_csv: str = "userdata/actors.csv"
+    cookie_json: str = "cookie.json", db_path: str = "userdata/actors.db"
 ):
     """
-    抓取收藏演员列表并写入指定 CSV，返回抓取结果列表。
+    抓取收藏演员列表并写入 SQLite 数据库文件，返回抓取结果列表。
     """
     data = crawl_all_pages(cookie_json)
     LOGGER.info("收藏演员抓取结果：%d 条。", len(data))
     if data:
-        write_actors_csv(data, out_csv)
-        LOGGER.info("演员列表已写入 %s。", out_csv)
+        with Storage(db_path) as store:
+            saved = store.save_actors(data)
+        LOGGER.info("演员列表已写入数据库 %s（更新 %d 条）。", db_path, saved)
     else:
         LOGGER.warning("未抓取到演员数据，未写入文件。")
     return data
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="抓取收藏演员列表并写入 CSV")
+    parser = argparse.ArgumentParser(description="抓取收藏演员列表并写入 SQLite 数据库")
     parser.add_argument(
         "--cookie", default="cookie.json", help="Cookie JSON 路径，默认 cookie.json"
     )
     parser.add_argument(
-        "--output",
-        default="userdata/actors.csv",
-        help="演员列表输出 CSV，默认 userdata/actors.csv",
+        "--db",
+        dest="db_path",
+        default="userdata/actors.db",
+        help="SQLite 数据库文件路径，默认 userdata/actors.db。",
     )
     args = parser.parse_args()
 
-    run_collect_actors(cookie_json=args.cookie, out_csv=args.output)
+    run_collect_actors(cookie_json=args.cookie, db_path=args.db_path)
