@@ -3,10 +3,12 @@ import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
-from urllib.parse import urljoin, urlparse, urlunparse, urlencode, parse_qsl
-from bs4 import BeautifulSoup
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
+
 import httpx
-from config import BASE_URL, LOGGER 
+from bs4 import BeautifulSoup
+
+from config import BASE_URL, LOGGER
 
 def setup_daily_file_logger(
     log_dir: str = "logs",
@@ -84,6 +86,100 @@ def find_next_url(html: str):
     # “下一頁”按钮
     a = soup.find("a", string=lambda s: s and "下一頁" in s)
     return urljoin(BASE_URL, a["href"]) if a and a.has_attr("href") else None
+
+
+# --- 抓取过程记录工具 -------------------------------------------------
+
+def _read_json(path: Path, default: Dict[str, Any]) -> Dict[str, Any]:
+    if not path.exists():
+        return dict(default)
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        LOGGER.warning("解析历史文件失败，将重置：%s", path)
+        return dict(default)
+
+
+def record_history(
+    event: str,
+    payload: Optional[Dict[str, Any]] = None,
+    history_path: str = "userdata/history.jsonl",
+) -> None:
+    """
+    追加一条抓取历史记录，便于后续查看“上次爬到哪”。
+    建议在每个阶段（演员列表、作品列表等）结束后调用一次。
+    """
+    path = Path(history_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "ts": datetime.datetime.utcnow().isoformat() + "Z",
+        "event": event,
+    }
+    if payload:
+        entry.update(payload)
+    with path.open("a", encoding="utf-8") as fp:
+        fp.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def load_recent_history(
+    event: Optional[str] = None, limit: int = 5, history_path: str = "userdata/history.json"
+) -> list[Dict[str, Any]]:
+    """
+    读取最近的历史记录，可按 event 过滤。
+    """
+    path = Path(history_path)
+    if not path.exists():
+        return []
+    lines = path.read_text(encoding="utf-8").splitlines()
+    records = [json.loads(line) for line in lines if line.strip()]
+    if event:
+        records = [r for r in records if r.get("event") == event]
+    return records[-limit:]
+
+
+def save_checkpoint(
+    name: str, cursor: Dict[str, Any], ckpt_path: str = "userdata/checkpoints.json"
+) -> None:
+    """
+    保存分阶段的“断点”信息，例如：
+      save_checkpoint("actor_works", {"actor": actor_name, "index": i})
+    便于下次启动时知道上次处理到谁/第几条。
+    """
+    path = Path(ckpt_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = _read_json(path, default={})
+    data[name] = {
+        "cursor": cursor,
+        "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
+    }
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_checkpoint(
+    name: str, ckpt_path: str = "userdata/checkpoints.json"
+) -> Optional[Dict[str, Any]]:
+    """
+    读取指定阶段的断点信息；找不到则返回 None。
+    """
+    path = Path(ckpt_path)
+    data = _read_json(path, default={})
+    entry = data.get(name)
+    if not entry:
+        return None
+    return entry.get("cursor")
+
+
+def clear_checkpoint(name: str, ckpt_path: str = "userdata/checkpoints.json") -> None:
+    """
+    清除某个阶段的断点，便于重新全量抓取。
+    """
+    path = Path(ckpt_path)
+    if not path.exists():
+        return
+    data = _read_json(path, default={})
+    if name in data:
+        data.pop(name, None)
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def sanitize_filename(value: str, default: str = "file") -> str:

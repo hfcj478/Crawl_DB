@@ -2,13 +2,16 @@
 import argparse
 import time
 import random
-from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Sequence
 from bs4 import BeautifulSoup
 from config import BASE_URL, build_client, LOGGER
 from utils import (
     load_cookie_dict,
     fetch_html,
+    load_checkpoint,
+    save_checkpoint,
+    clear_checkpoint,
+    record_history,
 )
 from storage import Storage
 
@@ -90,10 +93,10 @@ def crawl_magnets_for_row(client, code: str, href: str):
 
 
 def run_magnet_jobs(
-    works_path: str = "userdata/works",
     out_root: str = "userdata/magnets",
     cookie_json: str = "cookie.json",
     db_path: str = "userdata/actors.db",
+    actor_name: Optional[Sequence[str] | str] = None,
 ):
     """
     遍历数据库中的作品，抓取磁链并存入 SQLite 数据库文件。
@@ -106,8 +109,6 @@ def run_magnet_jobs(
         if must not in cookies:
             LOGGER.warning("Cookie 缺少 %s，可能会遇到拦截。", must)
 
-    if works_path != "userdata/works":
-        LOGGER.debug("works_path 参数已废弃，将被忽略：%s", works_path)
     if out_root != "userdata/magnets":
         LOGGER.debug("out_root 参数仅用于 TXT 导出，与数据库写入无关：%s", out_root)
 
@@ -117,15 +118,51 @@ def run_magnet_jobs(
             LOGGER.warning("数据库中未找到作品数据，请先执行作品抓取。")
             return {}
 
+        actor_filters: list[str] = []
+        if actor_name is not None:
+            if isinstance(actor_name, str):
+                actor_filters = [n.strip() for n in actor_name.split(",") if n.strip()]
+            else:
+                actor_filters = [str(n).strip() for n in actor_name if str(n).strip()]
+
+        if actor_filters:
+            filtered = {name: all_works[name] for name in actor_filters if name in all_works}
+            missing = [name for name in actor_filters if name not in all_works]
+            if not filtered:
+                LOGGER.warning("未找到指定演员：%s", ", ".join(actor_filters))
+                return {}
+            if missing:
+                LOGGER.warning("部分演员未找到，将跳过：%s", ", ".join(missing))
+            all_works = filtered
+            LOGGER.info("仅抓取指定演员：%s", ", ".join(all_works.keys()))
+            resume_actor = None
+            resume_index = 0
+        else:
+            ckpt = load_checkpoint("magnets") or {}
+            resume_actor = ckpt.get("actor")
+            resume_index = int(ckpt.get("index", 0) or 0)
+            if resume_actor:
+                LOGGER.info(
+                    "检测到断点，将从演员 %s 的第 %d 条作品继续。",
+                    resume_actor,
+                    resume_index + 1,
+                )
+
         summary = {}
         with build_client(cookies) as client:
-            for actor_name, works in all_works.items():
+            actor_items = sorted(all_works.items(), key=lambda kv: kv[0].lower())
+            resume_mode = bool(resume_actor)
+            for actor_name, works in actor_items:
+                if resume_mode and actor_name != resume_actor:
+                    continue
+                resume_mode = False
                 actor_href = store.get_actor_href(actor_name) or ""
                 LOGGER.info("开始抓取演员：%s", actor_name)
                 magnet_counts = []
-                for i, work in enumerate(works, 1):
+                start_index = resume_index if actor_name == resume_actor else 0
+                for i, work in enumerate(works[start_index:], start=start_index):
                     code, href = work["code"], work["href"]
-                    LOGGER.info("[%d/%d] %s -> %s", i, len(works), code, href)
+                    LOGGER.info("[%d/%d] %s -> %s", i + 1, len(works), code, href)
                     try:
                         magnets = crawl_magnets_for_row(client, code, href)
                         if not magnets:
@@ -148,22 +185,28 @@ def run_magnet_jobs(
                         time.sleep(random.uniform(0.8, 1.6))
                     except Exception as e:
                         LOGGER.exception("%s 抓取失败：%s", code, e)
+                    save_checkpoint(
+                        "magnets", {"actor": actor_name, "index": i + 1}
+                    )
                 summary[actor_name] = {
                     "works": len(works),
                     "magnets": sum(magnet_counts),
                 }
+        clear_checkpoint("magnets")
+        record_history(
+            "magnets",
+            {
+                "actors": len(summary),
+                "works": sum(item["works"] for item in summary.values()),
+                "magnets": sum(item["magnets"] for item in summary.values()),
+            },
+        )
     LOGGER.info("抓取磁链完成。")
     return summary
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="根据数据库中的作品抓取磁链并写入 SQLite 数据库")
-    parser.add_argument(
-        "works_path",
-        nargs="?",
-        default="userdata/works",
-        help="（已废弃）保留参数以兼容旧脚本，将被忽略。",
-    )
     parser.add_argument(
         "--output-dir",
         default="userdata/magnets",
@@ -178,11 +221,17 @@ if __name__ == "__main__":
         default="userdata/actors.db",
         help="SQLite 数据库文件路径，默认 userdata/actors.db",
     )
+    parser.add_argument(
+        "--actor_name",
+        dest="actor_name",
+        help="只抓取指定演员，可用逗号分隔多个（默认抓取全部）。",
+        default=None,
+    )
     args = parser.parse_args()
 
     run_magnet_jobs(
-        works_path=args.works_path,
         out_root=args.output_dir,
         cookie_json=args.cookie,
         db_path=args.db_path,
+        actor_name=args.actor_name,
     )

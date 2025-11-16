@@ -11,6 +11,10 @@ from utils import (
     build_actor_url,
     find_next_url,
     fetch_html,
+    load_checkpoint,
+    save_checkpoint,
+    clear_checkpoint,
+    record_history,
 )
 from storage import Storage
 
@@ -55,10 +59,15 @@ def parse_works(html: str):
     return items
 
 
-def crawl_actor_works(start_url: str, cookie_json: str = "cookie.json"):
+def crawl_actor_works(
+    start_url: str,
+    cookie_json: str = "cookie.json",
+    known_codes: Optional[set[str]] = None,
+):
     """
     从单个演员的作品页（可带筛选参数）开始抓取，保留筛选并自动翻页，返回完整作品列表。
     """
+    known_codes = known_codes or set()
     cookies = load_cookie_dict(cookie_json)
     if not cookies:
         LOGGER.error("未能从 cookie.json 解析到有效 Cookie。")
@@ -76,8 +85,15 @@ def crawl_actor_works(start_url: str, cookie_json: str = "cookie.json"):
             html = fetch_html(client, url)
             works = parse_works(html)
             LOGGER.info("[page %d] 解析到作品 %d 条", page, len(works))
-            if works:
-                rows.extend(works)
+            hit_known = False
+            for item in works:
+                if item["code"] in known_codes:
+                    hit_known = True
+                    break
+                rows.append(item)
+            if hit_known:
+                LOGGER.info("遇到已收录作品，基于新→旧排序提前停止翻页。")
+                break
 
             nxt = find_next_url(html)
             if nxt and nxt != url:
@@ -95,6 +111,7 @@ def run_actor_works(
     tags: Optional[Sequence[str] | str] = None,
     sort_type: Optional[str] = None,
     cookie_json: str = "cookie.json",
+    actor_name: Optional[Sequence[str] | str] = None,
 ):
     """
     批量读取演员列表，抓取作品并写入指定的 SQLite 数据库文件。
@@ -105,6 +122,24 @@ def run_actor_works(
             LOGGER.warning("数据库中未找到演员数据，请先执行演员抓取。")
             return {}
 
+        actor_filters: list[str] = []
+        if actor_name is not None:
+            if isinstance(actor_name, str):
+                actor_filters = [n.strip() for n in actor_name.split(",") if n.strip()]
+            else:
+                actor_filters = [str(n).strip() for n in actor_name if str(n).strip()]
+
+        if actor_filters:
+            filtered = [(name, href) for name, href in actors if name in actor_filters]
+            missing = [name for name in actor_filters if name not in dict(actors)]
+            if not filtered:
+                LOGGER.warning("未找到指定演员：%s", ", ".join(actor_filters))
+                return {}
+            if missing:
+                LOGGER.warning("部分演员未找到，将跳过：%s", ", ".join(missing))
+            actors = filtered
+            LOGGER.info("仅抓取指定演员：%s", ", ".join(actor_filters))
+
         if isinstance(tags, str):
             tags_list = [t.strip() for t in tags.split(",") if t.strip()]
         elif tags:
@@ -112,12 +147,23 @@ def run_actor_works(
         else:
             tags_list = []
 
-        selected_sort = (
-            sort_type if sort_type is not None else ("0" if tags_list else None)
-        )
+        selected_sort = sort_type if sort_type is not None else "0"
         summary = {}
+        ckpt = load_checkpoint("actor_works") or {}
+        # 针对指定演员抓取不复用旧断点，避免跨演员的 index 混淆
+        if actor_filters:
+            start_index = 0
+        else:
+            start_index = int(ckpt.get("index", 0) or 0)
+            if start_index:
+                LOGGER.info(
+                    "检测到断点，将从第 %d 个演员继续（上次处理：%s）。",
+                    start_index + 1,
+                    ckpt.get("actor", ""),
+                )
 
-        for actor_name, href in actors:
+        for i, (actor_name, href) in enumerate(actors[start_index:], start=start_index):
+            existing_codes = {w["code"] for w in store.get_actor_works(actor_name)}
             start_url = build_actor_url(BASE_URL, href, tags_list, selected_sort)
             LOGGER.info("开始处理演员：%s", actor_name)
             if tags_list:
@@ -125,7 +171,11 @@ def run_actor_works(
             if selected_sort is not None:
                 LOGGER.info("使用 sort_type：%s", selected_sort)
 
-            works = crawl_actor_works(start_url=start_url, cookie_json=cookie_json)
+            works = crawl_actor_works(
+                start_url=start_url,
+                cookie_json=cookie_json,
+                known_codes=existing_codes,
+            )
             saved = store.save_actor_works(actor_name, href, works)
             LOGGER.info(
                 "作品列表已写入数据库 %s（新增/更新 %d 条，抓取 %d 条）。",
@@ -134,6 +184,16 @@ def run_actor_works(
                 len(works),
             )
             summary[actor_name] = {"count": len(works)}
+            save_checkpoint("actor_works", {"actor": actor_name, "index": i + 1})
+
+        clear_checkpoint("actor_works")
+        record_history(
+            "actor_works",
+            {
+                "actors": len(summary),
+                "works_total": sum(item["count"] for item in summary.values()),
+            },
+        )
 
         return summary
 
@@ -155,6 +215,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--cookie", default="cookie.json", help="Cookie JSON 路径，默认 cookie.json"
     )
+    parser.add_argument(
+        "--actor_name", help="仅抓取指定演员，可逗号分隔多名，不填则抓取全部。", default=None
+    )
     args = parser.parse_args()
 
     run_actor_works(
@@ -162,4 +225,5 @@ if __name__ == "__main__":
         tags=args.tags,
         sort_type=args.sort_type,
         cookie_json=args.cookie,
+        actor_name=args.actor_name,
     )
