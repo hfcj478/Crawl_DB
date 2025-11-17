@@ -21,10 +21,9 @@
 ```bash
 uv run python main.py \
   --tags s,d \
-  --sort-type 0
 ```
 
-可用 `--tags`/`--sort-type` 筛选，`--skip-collect/works/magnets` 跳过阶段。
+可用 `--tags` 筛选，`--skip-collect/works/magnets` 跳过阶段。
 
 ### 分步运行
 
@@ -41,9 +40,7 @@ uv run python get_collect_actors.py
 ```bash
 uv run python get_actor_works.py \
   --tags s,d \
-  --sort-type 0 \
   --actor-name 名1,名2 \\  # 可选，逗号分隔，默认抓全部
-
 ```
 
 写入 `works` 表。

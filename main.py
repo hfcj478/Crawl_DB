@@ -42,9 +42,6 @@ def main():
         "--tags", help="作品抓取标签过滤，逗号分隔，例如 s 或 s,d", default=None
     )
     parser.add_argument(
-        "--sort-type", help="作品抓取 sort_type 参数，例如 0", default=None
-    )
-    parser.add_argument(
         "--skip-collect", action="store_true", help="跳过收藏演员抓取步骤"
     )
     parser.add_argument("--skip-works", action="store_true", help="跳过作品抓取步骤")
@@ -62,7 +59,6 @@ def main():
         run_actor_works(
             db_path=args.db_path,
             tags=args.tags,
-            sort_type=args.sort_type,
             cookie_json=args.cookie,
         )
     else:

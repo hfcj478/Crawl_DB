@@ -109,7 +109,6 @@ def crawl_actor_works(
 def run_actor_works(
     db_path: str = "userdata/actors.db",
     tags: Optional[Sequence[str] | str] = None,
-    sort_type: Optional[str] = None,
     cookie_json: str = "cookie.json",
     actor_name: Optional[Sequence[str] | str] = None,
 ):
@@ -147,7 +146,6 @@ def run_actor_works(
         else:
             tags_list = []
 
-        selected_sort = sort_type if sort_type is not None else "0"
         summary = {}
         ckpt = load_checkpoint("actor_works") or {}
         # 针对指定演员抓取不复用旧断点，避免跨演员的 index 混淆
@@ -164,12 +162,10 @@ def run_actor_works(
 
         for i, (actor_name, href) in enumerate(actors[start_index:], start=start_index):
             existing_codes = {w["code"] for w in store.get_actor_works(actor_name)}
-            start_url = build_actor_url(BASE_URL, href, tags_list, selected_sort)
+            start_url = build_actor_url(BASE_URL, href, tags_list)
             LOGGER.info("开始处理演员：%s", actor_name)
             if tags_list:
                 LOGGER.info("使用标签过滤：%s", ",".join(tags_list))
-            if selected_sort is not None:
-                LOGGER.info("使用 sort_type：%s", selected_sort)
 
             works = crawl_actor_works(
                 start_url=start_url,
@@ -210,9 +206,6 @@ if __name__ == "__main__":
         "--tags", help="用于筛选的标签代码，逗号分隔，例如 s 或 s,d", default=None
     )
     parser.add_argument(
-        "--sort-type", help="作品排序方式，对应 sort_type 参数，例如 0", default=None
-    )
-    parser.add_argument(
         "--cookie", default="cookie.json", help="Cookie JSON 路径，默认 cookie.json"
     )
     parser.add_argument(
@@ -223,7 +216,6 @@ if __name__ == "__main__":
     run_actor_works(
         db_path=args.db_path,
         tags=args.tags,
-        sort_type=args.sort_type,
         cookie_json=args.cookie,
         actor_name=args.actor_name,
     )

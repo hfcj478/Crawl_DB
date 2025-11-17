@@ -60,18 +60,59 @@ def load_cookie_dict(cookie_json_path: str = "cookie.json") -> Dict[str, Any]:
     加载并归一化 cookie.json：
     1. {"cookie": "..."} -> 解析为 dict。
     2. 已经是 dict -> 原样返回。
-    3. 其他情况 -> 返回空 dict。
+    3. 文件缺失或格式异常 -> 友好提示并返回空 dict。
     """
-    with open(cookie_json_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    path = Path(cookie_json_path)
+    if not path.exists():
+        raise SystemExit(f"未找到 Cookie 文件：{cookie_json_path}")
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise SystemExit(f"读取 Cookie 文件失败：{cookie_json_path}（{exc}）")
 
     if isinstance(data, dict) and "cookie" in data and isinstance(data["cookie"], str):
-        return parse_cookie_string(data["cookie"])
+        cookies = parse_cookie_string(data["cookie"])
+    elif isinstance(data, dict):
+        cookies = data
+    else:
+        raise SystemExit(f"Cookie 文件格式无效，期望 JSON 对象：{cookie_json_path}")
 
-    if isinstance(data, dict):
-        return data
+    log_cookie_staleness(cookie_json_path)
+    if not is_cookie_valid(cookies):
+        raise SystemExit("Cookie 缺少关键字段或为空，退出。")
+    return cookies
 
-    return {}
+
+def log_cookie_staleness(cookie_json_path: str, warn_days: int = 3) -> None:
+    """
+    简单检查 cookie 文件的修改时间，超过 warn_days 天则提示可能过期。
+    仅作为提醒，无法替代站点验证。
+    """
+    path = Path(cookie_json_path)
+    if not path.exists():
+        return
+    try:
+        age_days = (datetime.datetime.now() - datetime.datetime.fromtimestamp(path.stat().st_mtime)).days
+    except OSError:
+        return
+    if age_days >= warn_days:
+        LOGGER.warning("Cookie 文件已超过 %d 天未更新，可能已过期：%s", warn_days, cookie_json_path)
+
+
+def is_cookie_valid(cookies: Dict[str, Any]) -> bool:
+    """
+    粗判 Cookie 是否“看起来可用”：
+    - 至少包含 cf_clearance/_jdb_session/over18（或等价字段）
+    - 值非空
+    实际有效性仍需请求验证。
+    """
+    required = ("cf_clearance", "_jdb_session", "over18")
+    missing = [k for k in required if not cookies.get(k)]
+    if missing:
+        LOGGER.warning("❌Cookie 无效!")
+        return False
+    return True
 
 
 def fetch_html(client: httpx.Client, url: str) -> str:
@@ -122,7 +163,7 @@ def record_history(
 
 
 def load_recent_history(
-    event: Optional[str] = None, limit: int = 5, history_path: str = "userdata/history.json"
+    event: Optional[str] = None, limit: int = 5, history_path: str = "userdata/history.jsonl"
 ) -> list[Dict[str, Any]]:
     """
     读取最近的历史记录，可按 event 过滤。
@@ -192,7 +233,7 @@ def sanitize_filename(value: str, default: str = "file") -> str:
 
 
 def build_actor_url(
-    base_url: str, href: str, tags: Sequence[str], sort_type: Optional[str]
+    base_url: str, href: str, tags: Sequence[str]
 ) -> str:
     """
     根据标签/排序参数组合演员作品页 URL。
@@ -203,14 +244,10 @@ def build_actor_url(
     for key, value in parse_qsl(parsed.query, keep_blank_values=True):
         if key == "t" and tags:
             continue
-        if key == "sort_type" and sort_type is not None:
-            continue
         query_items.append((key, value))
 
     if tags:
         query_items.append(("t", ",".join(tags)))
-    if sort_type is not None:
-        query_items.append(("sort_type", sort_type))
 
     query = urlencode(query_items, doseq=True)
     return urlunparse(parsed._replace(query=query))
