@@ -38,7 +38,7 @@ jobs:
       - name: Build app (Windows)
         if: startsWith(matrix.os, 'windows')
         run: |
-          pyinstaller --noconfirm --clean --windowed --name crawljav gui.py
+          pyinstaller --noconfirm --clean --windowed --onefile --name crawljav gui.py
           powershell -Command "Compress-Archive -Path dist\\crawljav.exe -DestinationPath dist\\crawljav-windows.zip"
 
       - name: Upload release assets
