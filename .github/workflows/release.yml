@@ -1,9 +1,15 @@
-name: Build and रिलीज
+name: Build and Release
 
 on:
   push:
     tags:
       - "v*"
+
+env:
+  APP_NAME: crawljav
+  PYTHON_VERSION: "3.11"
+  SCHEMA_FILE: schema.sql
+  RELEASE_TAG: ${{ github.ref_name }}
 
 jobs:
   build:
@@ -21,7 +27,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
         run: |
@@ -32,28 +38,31 @@ jobs:
       - name: Build app (macOS)
         if: startsWith(matrix.os, 'macos')
         run: |
-          pyinstaller --noconfirm --clean --windowed --add-data "schema.sql:." --name crawljav gui.py
+          pyinstaller --noconfirm --clean --windowed --add-data "${{ env.SCHEMA_FILE }}:." --name "${{ env.APP_NAME }}" gui.py
           brew install create-dmg
-          rm -f dist/crawljav-macos.dmg
+          rm -f "dist/${{ env.APP_NAME }}-${{ env.RELEASE_TAG }}-macos.dmg"
+          rm -rf dist/dmg
+          mkdir -p dist/dmg
+          cp -R "dist/${{ env.APP_NAME }}.app" dist/dmg/
           create-dmg \
-            --volname "crawljav" \
+            --volname "${{ env.APP_NAME }}" \
             --window-pos 200 120 \
             --window-size 660 400 \
             --icon-size 120 \
-            --icon "crawljav.app" 160 200 \
+            --icon "${{ env.APP_NAME }}.app" 160 200 \
             --app-drop-link 500 200 \
-            "dist/crawljav-macos.dmg" \
-            "dist"
+            "dist/${{ env.APP_NAME }}-${{ env.RELEASE_TAG }}-macos.dmg" \
+            "dist/dmg"
 
       - name: Build app (Windows)
         if: startsWith(matrix.os, 'windows')
         run: |
-          pyinstaller --noconfirm --clean --windowed --onefile --add-data "schema.sql;." --name crawljav gui.py
-          powershell -Command "Compress-Archive -Path dist\\crawljav.exe -DestinationPath dist\\crawljav-windows.zip"
+          pyinstaller --noconfirm --clean --windowed --onefile --add-data "${{ env.SCHEMA_FILE }};." --name "${{ env.APP_NAME }}" gui.py
+          powershell -Command "Compress-Archive -Path dist\\${{ env.APP_NAME }}.exe -DestinationPath dist\\${{ env.APP_NAME }}-${{ env.RELEASE_TAG }}-windows.zip"
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/crawljav-macos.dmg
-            dist/crawljav-windows.zip
+            dist/${{ env.APP_NAME }}-${{ env.RELEASE_TAG }}-macos.dmg
+            dist/${{ env.APP_NAME }}-${{ env.RELEASE_TAG }}-windows.zip
